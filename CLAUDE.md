@@ -1,4 +1,4 @@
-# CLAUDE.md — Voxel: Sound Source Localization with a Microphone Array
+# CLAUDE.md — Sound Source Localization with a Microphone Array
 
 ## What this project is
 University course project (Project 9). We build a system that detects a sound and
@@ -173,7 +173,7 @@ USB. Wiring is provisional and will be redone.
 ## Conventions
 - C (gnu99) for firmware, Python 3 for host tools.
 - Keep hardware constants (pin map, mic positions in mm, sample rate, channel order)
-  in one header, e.g. `project_9-avr32/include/config_voxel.h` (not created yet), and mirror mic positions in
+  in one header, e.g. `project_9-avr32/include/hw_config.h` (not created yet), and mirror mic positions in
   `host/geometry.py`.
 - Document channel→mic mapping explicitly; swapped channels are a classic failure mode.
 - Don't modify files under `vendor/`; copy what you need.
