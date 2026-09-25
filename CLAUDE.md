@@ -28,9 +28,25 @@ behaviour, timing, memory), not just *what*. Prefer clear, commented code over c
 |---|---|
 | V+ | 3.3 V on the Xplained (NOT 5 V — keeps output within ADC range) |
 | GND | GND (star ground from central breadboard) |
-| Out | One ADC input each: mics 1–4 → ADC channels 0–3 (**actual header pins TBD — check UC3-A3 Xplained schematic**) |
+| Out | One ADC input each: mic 1 → AD4, mics 2–4 → AD1–AD3 (see pin table below) |
 | Gain | Unconnected for now = 60 dB. To V+ = 40 dB, to GND = 50 dB |
 | AR | Unconnected (attack/release ratio 1:4000, slowest release) |
+
+### ADC pins (from the part header `uc3a3256.h`; AD0–AD3 use GPIO function 0, AD4–AD7 function 2)
+| Mic | ADC channel | MCU pin | Xplained header | Verified |
+|---|---|---|---|---|
+| 1 | AD4 | PA20 (function 2) | J2 (pin not yet recorded) | tap test ✓ |
+| 2 | AD1 | PA22 | J2 pin 2 | tap test ✓ |
+| 3 | AD2 | PA23 | J2 pin 3 (presumed from pattern) | tap test ✓ |
+| 4 | AD3 | PA24 | J2 pin 4 (presumed from pattern) | tap test ✓ |
+
+Wiring is provisional; re-verify this table after the rewire.
+
+**AD0 / PA21 is not used**: it showed a steady ~360-count p2p noise signal whichever mic
+was on it (mic swap confirmed it follows the channel), so mic 1 was moved to AD4. Cause not
+found yet (wiring vs. something on the board — check the schematic for PA21).
+Spare channels: AD5–AD7 on PA19–PA17 (function 2). PA20 doubles as the MXT143E display
+backlight pin in ASF, which only matters if `CONF_BOARD_ENABLE_MXT143E_XPLAINED` is set.
 
 - MAX9814 output: ~1.25 V DC bias, up to ~2 Vpp → about 0.25–2.25 V. Connected directly
   to ADC (no coupling cap); optional 1 kΩ series resistor.
@@ -51,6 +67,14 @@ behaviour, timing, memory), not just *what*. Prefer clear, commented code over c
   corrected in software.
 - **Sampling must be hardware-timed**: Timer/Counter triggers the ADC, Peripheral DMA
   (PDCA) moves results to RAM. Never sample from a software loop (jitter).
+- **Current clock is 12 MHz**: `conf_clock.h` runs CPU and PBA straight from OSC0
+  (12 MHz crystal); PLL0 is configured but unused. Reaching 4 × 96 kHz needs the PLL
+  (48–66 MHz) — check flash wait states when going above ~33 MHz.
+- **ADC timing** (verify against datasheet ADC chapter): ADC clock = PBA / ((PRESCAL+1)·2),
+  max ~5 MHz. ASF's `adc_configure()` sets SHTIM to max (15), so one channel takes about
+  (SHTIM+1) + 10 ADC clocks. With today's 3 MHz ADC clock that is ~8.7 µs/channel,
+  ~35 µs for 4 channels → ~29 kHz per channel max. Faster needs a higher PBA clock plus
+  our own PRESCAL/SHTIM values.
 - Data rate 4 ch × 96 kHz × 2 B ≈ 768 kB/s → UART is far too slow. Use either
   burst capture into SRAM (~160 ms fits) then dump, or USB (CDC / vendor class).
 
@@ -63,7 +87,12 @@ flash from macOS.
   in `/opt/avr32`.
 - `vendor/xdk-asf-3.52.0/` — **ASF 3** standalone (drivers: adc, pdca, tc, gpio, intc,
   pm, usbb/udc; board support for UC3-A3 Xplained). Git-ignored.
-- Build: `make -C <project>/gcc` inside the container (ASF makefile system:
+- Repo layout: everything lives in `project_9-avr32/`. Our firmware apps are in
+  `project_9-avr32/apps/<name>/` (sources + `conf_*.h` + `asf.h`), each with a `gcc/`
+  folder holding `Makefile` and `config.mk`. `config.mk` sets
+  `PRJ_PATH = ../../../vendor/xdk-asf-3.52.0`, lists our own files as `../main.c`, and
+  adds `-I..` to `CPPFLAGS`.
+- Build: `make -C apps/<name>/gcc` inside the container (ASF makefile system:
   `config.mk` + `make/Makefile.avr32.in`). Compiler flag `-mpart=uc3a3256`,
   `BOARD=UC3_A3_XPLAINED`.
 - If only `.elf` is produced: `avr32-objcopy -O ihex x.elf x.hex`.
@@ -80,32 +109,71 @@ flash from macOS.
 - Debug output: USB CDC → appears on Mac as `/dev/cu.usbmodem*`.
 
 ## Current status
+**Milestone reached (2026-09-25): hardware bring-up done.** The board boots our own
+firmware, all four microphones deliver signal to the ADC, and we talk to the board over
+USB. Wiring is provisional and will be redone.
+
 - [x] Hardware assembled on tray, mics on mini breadboards
-- [x] Dev container + flash script written — **not yet verified end-to-end**
-- [ ] Container builds and `avr32-gcc --version` works
-- [ ] ASF example (LED/GPIO) built, flashed, runs
-- [ ] Single mic read via ADC and printed over USB
-- [ ] All 4 channels read
+- [x] Dev container builds, toolchain works (image `project_9-avr32:latest`)
+- [x] Build → DFU flash → boot verified end-to-end (trampoline OK)
+- [x] USB CDC serial output to the Mac works (`/dev/cu.usbmodem*`)
+- [x] All 4 mics read by `apps/mic_test` (software-paced, 8 kHz, mean + p2p per 50 ms):
+      idle mean ~385–388 counts ≈ 1.24 V on every channel, matching the MAX9814 bias
+      (so ADVREF ≈ 3.3 V is consistent); quiet p2p ≈ 60–110 at 60 dB gain
+- [x] Channel→mic mapping verified by tapping each capsule in turn (mic 1 = AD4,
+      mic 2 = AD1, mic 3 = AD2, mic 4 = AD3). Claps don't work for this: at 60 dB they
+      saturate every mic.
+
+### Findings to carry into the rewire
+- **AD0 / PA21 is noisy — avoid it.** It showed a steady p2p ≈ 360 with no sound and a
+  mean wandering ±40, whichever mic was connected (a board swap proved it follows the
+  channel, not the mic). Likely 50 Hz hum or a ground problem on that path; cause not
+  found. Moving mic 1 to AD4 fixed it. If AD0 is ever needed: ground PA21 with nothing
+  connected to tell wiring apart from the board, and check the schematic for PA21 (the
+  Xplained does have on-board parts on some ADC pins — ASF reads a temperature sensor
+  on AD1).
+- **Suspected loose shared GND/V+.** Once, all four channels jumped together to a flat
+  ~810 counts (≈2.6 V, p2p < 10) for ~150 ms and took ~0.5 s to settle. All mics moving
+  at once means a shared supply/ground connection, not sound. Make the star ground and
+  V+ rail solid, then do a wiggle test while watching `mic_test`.
+- **Clipping and AGC.** Claps and taps hit a ceiling of ~770 counts p2p on every mic.
+  After a loud sound the AGC cuts gain, then takes ~1–1.5 s to recover (AR pin
+  unconnected = slowest release), so levels depend on recent history. Consider Gain → V+
+  (40 dB) when rewiring.
+- Record J2 pin numbers for every mic wire, and which tray corner each mic sits in.
+
+## Gotchas learned so far
+- `conf_clock.h` sets all `CONFIG_SYSCLK_INIT_*MASK` to 0, so peripheral clocks are off
+  after `sysclk_init()`. Enable each one explicitly (e.g.
+  `sysclk_enable_pba_module(SYSCLK_ADC)`), or the peripheral silently never runs.
+- `dfu-programmer launch` can hang after the chip resets; `flash.sh` kills it after 5 s.
+- `mic_test` only prints while a terminal holds DTR high; LED0 toggles as a heartbeat
+  regardless.
 
 ## Next tasks (in order)
-1. Get the toolchain verified: build and flash an ASF UC3-A3 Xplained LED example.
-2. Create our own project (copy an ASF example's structure into `firmware/`, not inside
-   `vendor/`). Keep ASF paths relative via `PRJ_PATH` in `config.mk`.
-3. Read one ADC channel, print over USB CDC. Confirm ~1.25 V bias ≈ code ~388 at
-   3.3 V ref, 10-bit.
-4. Timer-triggered 4-channel ADC sequence + PDCA into double (ping-pong) buffers.
-5. Burst capture on trigger (e.g. clap above threshold) → dump raw samples over USB.
-6. Host side (Python, in repo `host/`): read serial, save to `.npy`/CSV, plot 4 channels.
-7. Measure and store ADC inter-channel skew; apply correction.
-8. TDoA estimation on the PC first (cross-correlation / GCC-PHAT with sub-sample
+1. Rewire: solid star ground and V+ rail, mics on AD1–AD4 (not AD0), decide on gain.
+   Rerun `apps/mic_test`: quiet p2p similar on all four, tap test maps correctly, no
+   jumps when wires are wiggled.
+2. Measure capsule positions (mm) and record them with the channel map.
+3. Put hardware constants in one shared header (see Conventions).
+4. Raw-sample capture over USB + host script (Python, in repo `host/`) to plot the
+   4 channels — lets every later step be checked by eye.
+5. Switch system clock to the PLL (48–66 MHz) and set ADC PRESCAL/SHTIM for the target
+   rate.
+6. Timer-triggered 4-channel ADC sequence + PDCA into double (ping-pong) buffers.
+7. Burst capture on trigger (e.g. clap above threshold) → dump raw samples over USB;
+   host saves to `.npy`/CSV.
+8. Measure and store ADC inter-channel skew; apply correction. Note the ADC converts
+   enabled channels lowest first, so channel order (not mic number) sets the skew.
+9. TDoA estimation on the PC first (cross-correlation / GCC-PHAT with sub-sample
    interpolation), validate against oscilloscope measurements, then port to the MCU
    (UC3 DSP library has fixed-point FFT).
-9. Direction estimate from pairwise delays + measured mic geometry; simple UI.
+10. Direction estimate from pairwise delays + measured mic geometry; simple UI.
 
 ## Conventions
 - C (gnu99) for firmware, Python 3 for host tools.
 - Keep hardware constants (pin map, mic positions in mm, sample rate, channel order)
-  in one header, e.g. `firmware/src/config_voxel.h`, and mirror mic positions in
+  in one header, e.g. `project_9-avr32/include/config_voxel.h` (not created yet), and mirror mic positions in
   `host/geometry.py`.
 - Document channel→mic mapping explicitly; swapped channels are a classic failure mode.
 - Don't modify files under `vendor/`; copy what you need.
