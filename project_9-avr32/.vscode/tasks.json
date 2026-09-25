@@ -1,0 +1,37 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Check toolchain",
+      "type": "shell",
+      "command": "avr32-gcc --version && ls /opt/avr32/avr32/include/avr32/uc3a3256.h",
+      "problemMatcher": []
+    },
+    {
+      "label": "List UC3-A3 Xplained examples in ASF",
+      "type": "shell",
+      "command": "find vendor -type d -path '*uc3_a3_xplained*/gcc' | sort",
+      "problemMatcher": []
+    },
+    {
+      "label": "Build ASF project (pick gcc folder)",
+      "type": "shell",
+      "command": "make -C '${input:gccDir}'",
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "Clean ASF project",
+      "type": "shell",
+      "command": "make -C '${input:gccDir}' clean",
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "gccDir",
+      "type": "promptString",
+      "description": "Path to the project's gcc/ folder (relative to the workspace)"
+    }
+  ]
+}

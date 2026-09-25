@@ -1,0 +1,20 @@
+{
+  "configurations": [
+    {
+      "name": "AVR32 UC3A3256",
+      "compilerPath": "/opt/avr32/bin/avr32-gcc",
+      "compilerArgs": ["-mpart=uc3a3256"],
+      "cStandard": "gnu99",
+      "intelliSenseMode": "gcc-x86",
+      "defines": [
+        "BOARD=UC3_A3_XPLAINED",
+        "__AVR32_UC3A3256__"
+      ],
+      "includePath": [
+        "${workspaceFolder}/**",
+        "/opt/avr32/avr32/include"
+      ]
+    }
+  ],
+  "version": 4
+}

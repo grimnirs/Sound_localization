@@ -1,0 +1,10 @@
+vendor/*
+!vendor/README.md
+*.elf
+*.hex
+*.bin
+*.o
+*.d
+*.map
+*.lss
+*.sym
