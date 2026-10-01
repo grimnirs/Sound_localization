@@ -21,7 +21,7 @@ behaviour, timing, memory), not just *what*. Prefer clear, commented code over c
 | MCU board | **UC3-A3 Xplained** (AT32UC3A3256, 32-bit AVR, up to 66 MHz, 64 KB CPU SRAM + 2×32 KB bus SRAM, Hi-Speed USB) |
 | Programming | USB **DFU bootloader** (no on-board debugger). No JTAG debugger yet. |
 | Microphones | 4 × **Adafruit MAX9814** electret mic amp with AGC (pins: GND, V+, Gain, Out, AR) |
-| Layout | 4 mics at the corners of a rectangle on a tray, roughly 35 × 45 cm (**exact capsule positions not yet measured**) |
+| Layout | 4 mics at the corners of a rectangle on a tray, roughly 35 × 45 cm (**exact capsule positions not yet measured**). Corners: mic 1 front-right, mic 2 front-left, mic 3 back-left, mic 4 back-right |
 
 ### Wiring (per microphone)
 | MAX9814 pin | Connect to |
@@ -33,12 +33,15 @@ behaviour, timing, memory), not just *what*. Prefer clear, commented code over c
 | AR | Unconnected (attack/release ratio 1:4000, slowest release) |
 
 ### ADC pins (from the part header `uc3a3256.h`; AD0–AD3 use GPIO function 0, AD4–AD7 function 2)
-| Mic | ADC channel | MCU pin | Xplained header | Verified |
-|---|---|---|---|---|
-| 1 | AD4 | PA20 (function 2) | J2 (pin not yet recorded) | tap test ✓ |
-| 2 | AD1 | PA22 | J2 pin 2 | tap test ✓ |
-| 3 | AD2 | PA23 | J2 pin 3 (presumed from pattern) | tap test ✓ |
-| 4 | AD3 | PA24 | J2 pin 4 (presumed from pattern) | tap test ✓ |
+| Mic | ADC channel | MCU pin | Xplained header | Tray corner | Verified |
+|---|---|---|---|---|---|
+| 1 | AD4 | PA20 (function 2) | J2 (pin not yet recorded) | front-right | tap test ✓ |
+| 2 | AD1 | PA22 | J2 pin 2 | front-left | tap test ✓ |
+| 3 | AD2 | PA23 | J2 pin 3 (presumed from pattern) | back-left | tap test ✓ |
+| 4 | AD3 | PA24 | J2 pin 4 (presumed from pattern) | back-right | tap test ✓ |
+
+Front/back was set by the team (mics 1–2 face forward). Left/right was inferred from the
+clap test (2026-10-01): claps from the right reach mics 1 and 4 first, from the left 2 and 3.
 
 Wiring is provisional; re-verify this table after the rewire.
 
@@ -67,14 +70,17 @@ backlight pin in ASF, which only matters if `CONF_BOARD_ENABLE_MXT143E_XPLAINED`
   corrected in software.
 - **Sampling must be hardware-timed**: Timer/Counter triggers the ADC, Peripheral DMA
   (PDCA) moves results to RAM. Never sample from a software loop (jitter).
-- **Current clock is 12 MHz**: `conf_clock.h` runs CPU and PBA straight from OSC0
-  (12 MHz crystal); PLL0 is configured but unused. Reaching 4 × 96 kHz needs the PLL
-  (48–66 MHz) — check flash wait states when going above ~33 MHz.
+- **Clock per app**: `mic_test` runs CPU and PBA straight from OSC0 (12 MHz crystal).
+  `first_arrival` runs them from PLL0 at 48 MHz (`CONFIG_SYSCLK_SOURCE SYSCLK_SRC_PLL0`,
+  MUL 4; ASF runs the VCO at 96 MHz and divides by 2). `sysclk_init()` sets the flash wait
+  state itself. USB stays on OSC0 at 12 MHz and works unchanged.
 - **ADC timing** (verify against datasheet ADC chapter): ADC clock = PBA / ((PRESCAL+1)·2),
   max ~5 MHz. ASF's `adc_configure()` sets SHTIM to max (15), so one channel takes about
-  (SHTIM+1) + 10 ADC clocks. With today's 3 MHz ADC clock that is ~8.7 µs/channel,
-  ~35 µs for 4 channels → ~29 kHz per channel max. Faster needs a higher PBA clock plus
-  our own PRESCAL/SHTIM values.
+  (SHTIM+1) + 10 ADC clocks. In `mic_test` (3 MHz ADC clock) that is ~8.7 µs/channel,
+  ~35 µs for 4 channels → ~29 kHz per channel max. `first_arrival` writes `ADC.mr` itself:
+  PRESCAL 4 (4.8 MHz ADC clock), SHTIM 3 → ~2.9 µs/channel, ~11.7 µs for 4 channels,
+  inside the 20.8 µs frame at 48 kHz. 96 kHz would need a 66 MHz PBA plus a shorter SHTIM;
+  not tried.
 - Data rate 4 ch × 96 kHz × 2 B ≈ 768 kB/s → UART is far too slow. Use either
   burst capture into SRAM (~160 ms fits) then dump, or USB (CDC / vendor class).
 
@@ -123,6 +129,18 @@ USB. Wiring is provisional and will be redone.
 - [x] Channel→mic mapping verified by tapping each capsule in turn (mic 1 = AD4,
       mic 2 = AD1, mic 3 = AD2, mic 4 = AD3). Claps don't work for this: at 60 dB they
       saturate every mic.
+- [x] `apps/first_arrival` runs on hardware (2026-10-01): PLL 48 MHz, TC0 TIOA → ADC
+      (PRESCAL 4, SHTIM 3, no `adc_configure()`) → PDCA ring buffer. Measured exactly
+      48000 frames/s; USB CDC still works on the PLL clock; baselines 381–383 on all mics.
+      Reports which mic crosses a threshold first + per-mic delays; LED n−1 = mic n.
+- [x] **Milestone (2026-10-01): 4-way direction from first arrival.** Hand claps ~1 m
+      out, 5 per direction (right, back, left, forward). The nearest corner mic was first
+      in every clap. Rule "the two earliest mics share a side → that side is the direction"
+      (1+2 forward, 3+4 back, 1+4 right, 2+3 left) scored 17/20: right 5/5, left 5/5,
+      back 4/5, forward 3/5. Averaging the left pair against the right pair (and front
+      against back) also scored 17/20. The results match the team's front/back layout,
+      which also shows the PDCA frame is aligned: a shifted frame would rotate the mic labels.
+      Typical delays: across left↔right ≈ 0.8–1.0 ms, partner mic on the same side 0.06–0.4 ms.
 
 ### Findings to carry into the rewire
 - **AD0 / PA21 is noisy — avoid it.** It showed a steady p2p ≈ 360 with no sound and a
@@ -140,15 +158,33 @@ USB. Wiring is provisional and will be redone.
   After a loud sound the AGC cuts gain, then takes ~1–1.5 s to recover (AR pin
   unconnected = slowest release), so levels depend on recent history. Consider Gain → V+
   (40 dB) when rewiring.
-- Record J2 pin numbers for every mic wire, and which tray corner each mic sits in.
+- Record J2 pin numbers for every mic wire (tray corners are now known, see pin table).
+- **Misses in the clap test came from the AGC and quiet claps**, not timing. Once a front
+  mic crossed 1.38 ms late (its gain was still reduced from the previous clap: hold-off is
+  0.5 s, AGC recovery 1–1.5 s), and once only one mic crossed at all. Leave ~2 s between
+  claps, lengthen `HOLDOFF_MS`, and/or Gain → V+ (40 dB) so claps clip less.
+- **Measured delays are shorter than the tray size predicts.** Left↔right ≈ 0.8–1.0 ms
+  (≈ 30 cm of sound travel), front↔back only ≈ 0.5–0.8 ms, while 35 × 45 cm should give
+  up to 1.0 and 1.3 ms. Either the capsule spacing differs from the tray size, or the
+  threshold crossing (AGC, clipping) biases the delays. Check once positions are measured.
 
 ## Gotchas learned so far
 - `conf_clock.h` sets all `CONFIG_SYSCLK_INIT_*MASK` to 0, so peripheral clocks are off
   after `sysclk_init()`. Enable each one explicitly (e.g.
   `sysclk_enable_pba_module(SYSCLK_ADC)`), or the peripheral silently never runs.
 - `dfu-programmer launch` can hang after the chip resets; `flash.sh` kills it after 5 s.
-- `mic_test` only prints while a terminal holds DTR high; LED0 toggles as a heartbeat
-  regardless.
+- DFU mode: the board re-enumerates as Atmel product ID **0x2FF1** (bootloader 1.0.3); the
+  app shows up as 0x2404. The DFU device is not a disk, so it never appears in Finder; check
+  it with `dfu-programmer at32uc3a3256 get bootloader-version`. Run `flash.sh` from
+  `project_9-avr32/`, because the script and `.hex` paths are relative to that folder.
+- `mic_test` and `first_arrival` only print while a terminal holds DTR high
+  (`screen /dev/cu.usbmodem*` does). `mic_test` toggles LED0 as a heartbeat; `first_arrival`
+  lights LED n−1 for the first mic n of the last event.
+- `first_arrival`: don't call ASF `adc_configure()`. It ORs SHTIM=15 and STARTUP=31 into
+  `ADC.mr`, which is far too slow for 4 × 48 kHz.
+- PDCA alignment: read `ADC.lcdr` once before `pdca_enable()`. A stale "data ready" makes
+  the PDCA copy one extra value, which shifts every frame by one channel and silently
+  swaps the mics.
 
 ## Next tasks (in order)
 1. Rewire: solid star ground and V+ rail, mics on AD1–AD4 (not AD0), decide on gain.
@@ -158,9 +194,12 @@ USB. Wiring is provisional and will be redone.
 3. Put hardware constants in one shared header (see Conventions).
 4. Raw-sample capture over USB + host script (Python, in repo `host/`) to plot the
    4 channels — lets every later step be checked by eye.
-5. Switch system clock to the PLL (48–66 MHz) and set ADC PRESCAL/SHTIM for the target
-   rate.
-6. Timer-triggered 4-channel ADC sequence + PDCA into double (ping-pong) buffers.
+5. ~~Switch system clock to the PLL and set ADC PRESCAL/SHTIM~~ — done in
+   `first_arrival` (48 MHz, 48 kHz per mic). 96 kHz still open if needed.
+6. ~~Timer-triggered 4-channel ADC sequence + PDCA~~ — done in `first_arrival` as an
+   endless ring buffer (PDCA reload interrupt), not ping-pong buffers.
+6b. `first_arrival`: fill `mic_corner[]`, print FORWARD/RIGHT/BACK/LEFT using the
+   two-earliest-mics rule, longer hold-off (~2 s) for AGC recovery.
 7. Burst capture on trigger (e.g. clap above threshold) → dump raw samples over USB;
    host saves to `.npy`/CSV.
 8. Measure and store ADC inter-channel skew; apply correction. Note the ADC converts
