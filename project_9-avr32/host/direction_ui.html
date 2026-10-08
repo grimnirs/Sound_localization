@@ -1,0 +1,621 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Direction finder</title>
+<!--
+  Page for host/direction_ui.py. Served by that script, which pushes the board's
+  events here with Server-Sent Events (/events). No external files, so it works
+  without internet in the lab.
+-->
+<style>
+:root {
+  --bench: #E8ECEF;
+  --panel: #F6F8F9;
+  --ink: #1B232B;
+  --ink-2: #57636E;
+  --rule: #C9D1D8;
+  --port: #C2413A;          /* left: port red, as on ships and aircraft */
+  --stbd: #1D8656;          /* right: starboard green */
+  --mid: #5E6C79;           /* centre */
+  --warn: #A86A12;
+  --on-flood: #FFFFFF;
+  --ghost: .13;
+  --word: "Avenir Next Condensed", "Avenir Next", "Arial Narrow", "Roboto Condensed", sans-serif;
+  --text: "Avenir Next", -apple-system, "Segoe UI", system-ui, sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bench: #14181C;
+    --panel: #1B2025;
+    --ink: #E3E8EC;
+    --ink-2: #94A1AC;
+    --rule: #2D353C;
+    --port: #E0645B;
+    --stbd: #3DBE84;
+    --mid: #8C9AA7;
+    --warn: #E0A040;
+    --ghost: .16;
+    color-scheme: dark;
+  }
+  .half.left .flood { background: #B5423B; }
+  .half.right .flood { background: #1E7F53; }
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bench);
+  color: var(--ink);
+  font: 15px/1.45 var(--text);
+  font-variant-numeric: tabular-nums;
+}
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+/* ---------- top bar ---------- */
+.bar {
+  display: flex; align-items: center; gap: 24px;
+  padding: 14px 24px;
+}
+.bar h1 { font-size: 17px; font-weight: 600; margin: 0; letter-spacing: .01em; }
+.bar .grow { flex: 1; }
+.status { display: flex; align-items: center; gap: 8px; color: var(--ink-2); font-size: 14px; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--rule); flex: none; }
+.status[data-state="connected"] .dot, .status[data-state="demo"] .dot { background: var(--stbd); }
+.status[data-state="searching"] .dot { background: var(--warn); }
+.status[data-state="server"] .dot { background: var(--port); }
+.state {
+  min-width: 150px; text-align: right; font-weight: 600; font-size: 14px;
+}
+.state[data-state="settling"] { color: var(--ink-2); }
+
+/* ---------- stage: the two halves ---------- */
+.stage {
+  position: relative;
+  display: grid; grid-template-columns: 1fr 1fr;
+  height: clamp(300px, 52vh, 560px);
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+  overflow: hidden;
+}
+.half { position: relative; display: flex; flex-direction: column; justify-content: center; padding: 0 4vw; }
+.half.left { align-items: flex-start; }
+.half.right { align-items: flex-end; text-align: right; }
+.half.left { --side: var(--port); }
+.half.right { --side: var(--stbd); }
+.flood {
+  position: absolute; inset: 0; opacity: 0;
+  background: var(--side);
+}
+.half.centre-hit .flood { background: var(--mid); }
+.drain {
+  position: absolute; left: 0; bottom: 0; height: 6px; width: 0;
+  background: var(--on-flood); opacity: .55;
+}
+.half.right .drain { left: auto; right: 0; }
+.word {
+  position: relative;
+  font-family: var(--word); font-weight: 700; font-stretch: condensed;
+  font-size: clamp(64px, 12vw, 200px); line-height: .9; letter-spacing: -.01em;
+  color: var(--side); opacity: var(--ghost);
+}
+.sub { position: relative; margin-top: 14px; min-height: 3.2em; opacity: 0; }
+.sub .dt { font-size: clamp(20px, 2.4vw, 30px); font-weight: 600; }
+.sub .why { color: var(--ink-2); font-size: 15px; }
+.half.active .word, .half.active .sub { opacity: 1; }
+.half.lit .word, .half.lit .sub, .half.lit .sub .why { color: var(--on-flood); }
+.half.lit .flood { opacity: 1; }
+.half.centre-hit.lit .flood { opacity: .4; }
+.half.fading .flood, .half.fading .word, .half.fading .sub, .half.fading .why {
+  transition: opacity .45s ease-out, color .45s ease-out;
+}
+
+.split {
+  position: absolute; left: 50%; top: 0; bottom: 0; width: 0;
+  border-left: 1px dashed var(--rule);
+}
+.tray {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  height: 86%; max-height: 420px; overflow: visible;
+}
+.tray .board { fill: var(--panel); stroke: var(--ink-2); stroke-width: 1.5; }
+.tray .tag { fill: var(--bench); }
+.tray .edge { fill: var(--ink-2); font-size: 13px; text-anchor: middle; dominant-baseline: central; }
+.tray .mic circle { fill: var(--panel); stroke: var(--ink-2); stroke-width: 1.5; }
+.tray .mic text.n { font-size: 13px; font-weight: 600; text-anchor: middle; dominant-baseline: central; fill: var(--ink); }
+.tray .mic text.t { font-size: 13px; fill: var(--ink-2); dominant-baseline: central; transition: fill .45s ease-out; }
+.tray .mic.first circle { fill: var(--first); stroke: var(--first); }
+.tray .mic.first text.n { fill: #fff; }
+.tray .mic.heard circle { stroke: var(--ink); stroke-width: 2; }
+.tray .mic.missing circle { stroke-dasharray: 3 3; }
+.tray .mic.echo text.t { fill: var(--warn); }
+/* labels sitting on a flooded half */
+.stage[data-lit="LEFT"] .mic.l text.t, .stage[data-lit="RIGHT"] .mic.r text.t { fill: var(--on-flood); }
+.stage[data-lit="CENTRE"] .mic text.t { fill: var(--ink); }
+.tray .centre-text {
+  font-family: var(--word); font-weight: 700; font-size: 36px;
+  text-anchor: middle; dominant-baseline: central; fill: var(--ink); opacity: 0;
+}
+.stage[data-side="CENTRE"] .tray .centre-text { opacity: 1; }
+.tray .hint { font-size: 13px; fill: var(--ink-2); text-anchor: middle; }
+
+/* ---------- dt meter, sharing the stage's centre line ---------- */
+.meter { padding: 18px 0 8px; }
+.axis { position: relative; height: 44px; margin: 0 24px; }
+.axis .line { position: absolute; left: 0; right: 0; top: 50%; border-top: 1px solid var(--ink-2); }
+.axis .band { position: absolute; top: 25%; bottom: 25%; background: var(--rule); opacity: .7; }
+.axis .tick { position: absolute; top: 38%; height: 24%; border-left: 1px solid var(--ink-2); }
+.axis .needle {
+  position: absolute; top: 0; bottom: 0; width: 0; border-left: 3px solid var(--ink);
+  transform: translateX(-1.5px); opacity: 0;
+}
+.axis .needle::before {
+  content: ""; position: absolute; top: -2px; left: -8.5px;
+  border: 7px solid transparent; border-top: 9px solid currentColor;
+}
+.axis .mark {
+  position: absolute; width: 10px; height: 10px; margin-left: -5px; border-radius: 50%;
+  border: 2px solid var(--ink); background: var(--bench); opacity: 0;
+}
+.axis .mark.up { top: 3px; }
+.axis .mark.down { bottom: 3px; }
+.scale { position: relative; height: 18px; margin: 0 24px; color: var(--ink-2); font-size: 13px; }
+.scale span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.scale .end-l { transform: none; left: 0 !important; color: var(--port); font-weight: 600; }
+.scale .end-r { transform: none; left: auto !important; right: 0; color: var(--stbd); font-weight: 600; }
+.caption { margin: 6px 24px 0; color: var(--ink-2); font-size: 13px; }
+
+/* ---------- lower row ---------- */
+.lower {
+  display: grid; grid-template-columns: 1.15fr 1fr 1.5fr; gap: 0;
+  border-top: 1px solid var(--rule); margin-top: 14px;
+}
+.lower > section { padding: 18px 24px 24px; }
+.lower > section + section { border-left: 1px solid var(--rule); }
+h2 { font-size: 15px; font-weight: 600; margin: 0 0 4px; }
+.note { color: var(--ink-2); font-size: 13px; margin: 0 0 14px; max-width: 46ch; }
+
+.choices { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+.choices button {
+  border: 1px solid var(--rule); background: var(--panel); border-radius: 6px;
+  padding: 7px 12px; cursor: pointer; display: flex; align-items: center; gap: 8px;
+}
+.choices button[aria-pressed="true"] { background: var(--ink); color: var(--bench); border-color: var(--ink); }
+.choices button[data-side="LEFT"][aria-pressed="true"] { background: var(--port); border-color: var(--port); color: #fff; }
+.choices button[data-side="RIGHT"][aria-pressed="true"] { background: var(--stbd); border-color: var(--stbd); color: #fff; }
+kbd {
+  font: 12px/1 var(--text); padding: 2px 5px; border-radius: 4px;
+  border: 1px solid currentColor; opacity: .6;
+}
+table { border-collapse: collapse; width: 100%; }
+td, th { padding: 4px 8px 4px 0; text-align: left; font-weight: 400; }
+th { color: var(--ink-2); font-size: 13px; }
+.score td:nth-child(n+2), .score th:nth-child(n+2) { text-align: right; }
+.score tr.total td { border-top: 1px solid var(--rule); font-weight: 600; }
+.link-btn { border: 0; background: none; padding: 0; color: var(--ink-2); text-decoration: underline; cursor: pointer; font-size: 13px; }
+.logfile { color: var(--ink-2); font-size: 13px; margin-top: 10px; overflow-wrap: anywhere; }
+#logfile { display: block; margin-top: 4px; }
+
+.lv { display: grid; grid-template-columns: 116px 1fr 36px; align-items: center; gap: 10px; margin: 7px 0; font-size: 14px; }
+.lv .track { position: relative; height: 10px; background: var(--panel); border: 1px solid var(--rule); border-radius: 2px; }
+.lv .fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: var(--ink-2); }
+.lv .fill.over { background: var(--ink); }
+.lv .fill.clip { background: var(--warn); }
+.lv .thr { position: absolute; top: -4px; bottom: -4px; border-left: 2px solid var(--ink); }
+.lv .val { text-align: right; color: var(--ink-2); }
+
+.hist { max-height: 300px; overflow: auto; }
+.hist td { font-size: 14px; border-top: 1px solid var(--rule); }
+.hist td.side-LEFT { color: var(--port); font-weight: 600; }
+.hist td.side-RIGHT { color: var(--stbd); font-weight: 600; }
+.hist td.side-CENTRE { font-weight: 600; }
+.hist .num { text-align: right; padding-right: 16px; white-space: nowrap; }
+.hist .miss { color: var(--port); }
+.hist .doubt { color: var(--warn); }
+.empty { color: var(--ink-2); font-size: 14px; }
+
+details.log { border-top: 1px solid var(--rule); padding: 12px 24px 28px; }
+details.log summary { cursor: pointer; color: var(--ink-2); }
+details.log pre {
+  margin: 10px 0 0; max-height: 260px; overflow: auto; font: 12.5px/1.5 Menlo, Consolas, monospace;
+  background: var(--panel); border: 1px solid var(--rule); padding: 10px 12px; white-space: pre-wrap;
+}
+
+@media (max-width: 860px) {
+  .lower { grid-template-columns: 1fr; }
+  .lower > section + section { border-left: 0; border-top: 1px solid var(--rule); }
+  .bar { flex-wrap: wrap; gap: 8px 16px; padding: 12px 16px; }
+  .state { min-width: 0; text-align: left; }
+  .axis, .scale, .caption { margin-left: 16px; margin-right: 16px; }
+  .lower > section, details.log { padding-left: 16px; padding-right: 16px; }
+  .tray { height: 62%; }
+  .half { justify-content: flex-start; padding-top: 18px; }
+  .sub .why { display: none; }
+  .hist .when { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .half.fading .flood, .half.fading .word, .half.fading .sub, .half.fading .why { transition: none; }
+  .drain { display: none; }
+}
+</style>
+</head>
+<body>
+
+<header class="bar">
+  <h1>Direction finder</h1>
+  <div class="grow"></div>
+  <div class="status" id="status" data-state="starting"><span class="dot"></span><span id="status-text">Starting…</span></div>
+  <div class="state" id="state" title="After each sound the board ignores new sounds until the mics' automatic gain has recovered">&nbsp;</div>
+</header>
+
+<section class="stage" id="stage" aria-live="polite">
+  <div class="half left" id="half-LEFT">
+    <div class="flood"></div><div class="drain"></div>
+    <div class="word">Left</div>
+    <div class="sub"><div class="dt"></div><div class="why"></div></div>
+  </div>
+  <div class="half right" id="half-RIGHT">
+    <div class="flood"></div><div class="drain"></div>
+    <div class="word">Right</div>
+    <div class="sub"><div class="dt"></div><div class="why"></div></div>
+  </div>
+  <div class="split"></div>
+  <svg class="tray" id="tray" viewBox="-20 0 260 320" role="img" aria-label="Square seen from above, Up at the top">
+    <rect class="tag" x="88" y="12" width="44" height="26" rx="6"/>
+    <text class="edge" x="110" y="25">Up</text>
+    <rect class="board" x="40" y="58" width="140" height="180" rx="6"/>
+    <rect class="tag" x="82" y="258" width="56" height="26" rx="6"/>
+    <text class="edge" x="110" y="271">Down</text>
+    <text class="centre-text" x="110" y="148">Centre</text>
+    <text class="hint" id="hint" x="110" y="140"><tspan x="110">Clap about a metre</tspan><tspan x="110" dy="18">to one side</tspan></text>
+  </svg>
+</section>
+
+<section class="meter" aria-label="Time difference, left mics minus right mics">
+  <div class="axis" id="axis">
+    <div class="line"></div>
+    <div class="band" id="band"></div>
+    <div class="mark up" id="mk-up" title="Up pair: AD1 minus AD2"></div>
+    <div class="mark down" id="mk-down" title="Down pair: AD3 minus AD4"></div>
+    <div class="needle" id="needle"></div>
+  </div>
+  <div class="scale" id="scale"></div>
+  <p class="caption">How much later the left mics heard the sound than the right mics. The needle averages the up pair, AD1 and AD2 (upper dot), and the down pair, AD3 and AD4 (lower dot). The shaded band counts as centre.</p>
+</section>
+
+<div class="lower">
+  <section aria-labelledby="h-test">
+    <h2 id="h-test">Clap test</h2>
+    <p class="note">Choose where the next sounds will come from, then clap. Each result is scored against your choice and saved to the log.</p>
+    <div class="choices" id="choices" role="group" aria-label="Expected side">
+      <button data-side="" aria-pressed="true">Not testing <kbd>Esc</kbd></button>
+      <button data-side="LEFT" aria-pressed="false">Left <kbd>←</kbd></button>
+      <button data-side="RIGHT" aria-pressed="false">Right <kbd>→</kbd></button>
+      <button data-side="CENTRE" aria-pressed="false">Centre <kbd>↓</kbd></button>
+    </div>
+    <table class="score">
+      <thead><tr><th>Expected</th><th>Correct</th><th>Rate</th></tr></thead>
+      <tbody id="score"></tbody>
+    </table>
+    <p class="logfile"><button class="link-btn" id="reset">Reset score</button> <span id="logfile"></span></p>
+  </section>
+
+  <section aria-labelledby="h-lvl">
+    <h2 id="h-lvl">Mic levels</h2>
+    <p class="note">Loudest swing from the resting level over the last 0.1 s, in ADC counts. The line is the trigger threshold.</p>
+    <div id="levels"></div>
+    <p class="note" id="base" style="margin-top:12px"></p>
+  </section>
+
+  <section aria-labelledby="h-hist">
+    <h2 id="h-hist">Recent events</h2>
+    <div class="hist" id="hist"><p class="empty">No sounds yet.</p></div>
+  </section>
+</div>
+
+<details class="log">
+  <summary>Serial log</summary>
+  <pre id="raw"></pre>
+</details>
+
+<script>
+"use strict";
+const MICS = [
+  // Mic n is on ADC channel ADn. Seen from above, Up at the top.
+  { n: 1, name: "up left",    right: false, x: 40,  y: 58,  anchor: "end",   dx: -22 },
+  { n: 2, name: "up right",   right: true,  x: 180, y: 58,  anchor: "start", dx: 22 },
+  { n: 3, name: "down left",  right: false, x: 40,  y: 238, anchor: "end",   dx: -22 },
+  { n: 4, name: "down right", right: true,  x: 180, y: 238, anchor: "start", dx: 22 },
+];
+const SIDE_WORD = { LEFT: "Left", RIGHT: "Right", CENTRE: "Centre" };
+const SCALE_US = 1200;          // meter half-width; left-right max is about 1000 us
+const LEVEL_MAX = 400;          // counts; the MAX9814 swings about +-310 around its bias
+const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+const S = {
+  cfg: { thr: 150, centre_us: 100, max_us: 1700, hold_ms: 1500 },
+  link: { state: "starting" }, armed: false, expected: null,
+  score: { LEFT: [0, 0], RIGHT: [0, 0], CENTRE: [0, 0] },
+  history: [], holdUntil: 0, lastSide: null, raw: [],
+};
+const $ = (id) => document.getElementById(id);
+const fmtUs = (v) => (v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v) + " µs";
+
+// ---------- tray drawing ----------
+const svgNS = "http://www.w3.org/2000/svg";
+const micEls = MICS.map((m) => {
+  const g = document.createElementNS(svgNS, "g");
+  g.setAttribute("class", "mic");
+  g.innerHTML =
+    `<circle cx="${m.x}" cy="${m.y}" r="14"></circle>` +
+    `<text class="n" x="${m.x}" y="${m.y}">${m.n}</text>` +
+    `<text class="t" x="${m.x + m.dx}" y="${m.y}" text-anchor="${m.anchor}"></text>`;
+  $("tray").appendChild(g);
+  return g;
+});
+
+function drawMics(evt) {
+  const first = evt ? evt.first - 1 : -1;
+  MICS.forEach((m, i) => {
+    const g = micEls[i];
+    const t = evt ? evt.m[i] : null;
+    const echo = t !== null && t > S.cfg.max_us;
+    g.setAttribute("class", "mic " + (m.right ? "r" : "l") + (!evt ? "" : t === null ? " missing" : " heard")
+      + (i === first ? " first" : "") + (echo ? " echo" : ""));
+    g.style.setProperty("--first", m.right ? "var(--stbd)" : "var(--port)");
+    g.querySelector("text.t").textContent =
+      !evt ? `AD${m.n} ${m.name}` : t === null ? "no signal" : echo ? `${t} µs echo` : `${t} µs`;
+  });
+}
+
+// ---------- meter ----------
+const pct = (us) => 50 + Math.max(-1, Math.min(1, us / SCALE_US)) * 50;
+function drawScale() {
+  const axis = $("axis"), scale = $("scale");
+  axis.querySelectorAll(".tick").forEach((t) => t.remove());
+  scale.innerHTML = '<span class="end-l">Left</span><span class="end-r">Right</span>';
+  for (let us = -1000; us <= 1000; us += 250) {
+    const t = document.createElement("div");
+    t.className = "tick";
+    t.style.left = pct(us) + "%";
+    if (us % 500 === 0) t.style.top = "30%", t.style.height = "40%";
+    axis.appendChild(t);
+    if (us % 500 === 0 && Math.abs(us) < 1000) {
+      const l = document.createElement("span");
+      l.style.left = pct(us) + "%";
+      l.textContent = us === 0 ? "0" : fmtUs(us);
+      scale.appendChild(l);
+    }
+  }
+  const c = S.cfg.centre_us;
+  $("band").style.left = pct(-c) + "%";
+  $("band").style.width = (pct(c) - pct(-c)) + "%";
+}
+function drawMeter(evt) {
+  const needle = $("needle");
+  const place = (el, v) => {
+    el.style.opacity = v === null || v === undefined ? 0 : 1;
+    if (v !== null && v !== undefined) el.style.left = pct(v) + "%";
+  };
+  place(needle, evt ? evt.dt : null);
+  place($("mk-up"), evt ? evt.up : null);
+  place($("mk-down"), evt ? evt.down : null);
+  needle.style.color = !evt ? "" : evt.side === "LEFT" ? "var(--port)"
+    : evt.side === "RIGHT" ? "var(--stbd)" : "var(--ink)";
+  needle.style.borderColor = needle.style.color;
+}
+
+// ---------- the verdict ----------
+function why(evt) {
+  if (evt.pairs === 2) return evt.agree ? "Up and down pairs agree" : "Up and down pairs disagree";
+  if (evt.pairs === 1) return (evt.up !== null ? "Up" : "Down") + " pair only, one mic missed it";
+  return "Guessed from the first mic only";
+}
+
+function showEvent(evt, animate) {
+  S.lastSide = evt.side;
+  $("stage").dataset.side = evt.side;
+  $("hint").style.display = "none";
+  delete $("stage").dataset.lit;
+  for (const side of ["LEFT", "RIGHT"]) {
+    const half = $("half-" + side);
+    const mine = evt.side === side;
+    const centre = evt.side === "CENTRE";
+    half.classList.remove("fading", "lit", "active", "centre-hit");
+    half.classList.toggle("active", mine);
+    half.classList.toggle("centre-hit", centre);
+    half.querySelector(".dt").textContent = mine && evt.dt !== null ? fmtUs(evt.dt) : "";
+    half.querySelector(".why").textContent = mine ? why(evt) : "";
+    const drain = half.querySelector(".drain");
+    drain.style.transition = "none";
+    drain.style.width = "0";
+    if (animate && (mine || centre)) {
+      $("stage").dataset.lit = evt.side;
+      half.classList.add("lit");          // solid colour while the board settles
+      drain.style.width = "100%";
+      void drain.offsetWidth;
+      drain.style.transition = `width ${S.cfg.hold_ms}ms linear`;
+      drain.style.width = "0";
+    }
+  }
+  drawMics(evt);
+  drawMeter(evt);
+}
+
+function endFlood() {
+  delete $("stage").dataset.lit;
+  for (const side of ["LEFT", "RIGHT"]) {
+    const half = $("half-" + side);
+    if (half.classList.contains("lit")) {
+      half.classList.add("fading");
+      half.classList.remove("lit");
+    }
+  }
+}
+
+// ---------- status ----------
+function drawStatus() {
+  const l = S.link, el = $("status");
+  el.dataset.state = l.state;
+  $("status-text").textContent =
+    l.state === "connected" ? `Board on ${l.port}` :
+    l.state === "demo" ? "Demo: made-up events, no board" :
+    l.state === "searching" ? "Looking for the board. Plug it in, or close screen if it holds the port." :
+    l.state === "server" ? "Lost the UI script. Restart direction_ui.py." : "Starting…";
+  drawState();
+}
+function drawState() {
+  const el = $("state");
+  const live = S.link.state === "connected" || S.link.state === "demo";
+  let text = " ", state = "";
+  if (live && S.armed) text = "Listening", state = "armed";
+  else if (live && S.holdUntil > Date.now()) {
+    text = `Settling ${((S.holdUntil - Date.now()) / 1000).toFixed(1)} s`;
+    state = "settling";
+  } else if (live) text = "Waiting for the board", state = "settling";
+  el.textContent = text;
+  el.dataset.state = state;
+}
+setInterval(drawState, 100);
+
+// ---------- levels ----------
+const lvRows = MICS.map((m) => {
+  const row = document.createElement("div");
+  row.className = "lv";
+  row.innerHTML = `<span>AD${m.n} ${m.name}</span><div class="track"><div class="fill"></div><div class="thr"></div></div><span class="val">0</span>`;
+  $("levels").appendChild(row);
+  return row;
+});
+function drawThreshold() {
+  lvRows.forEach((r) => (r.querySelector(".thr").style.left = Math.min(100, (S.cfg.thr / LEVEL_MAX) * 100) + "%"));
+}
+function drawLevels(mics) {
+  mics.forEach((v, i) => {
+    const f = lvRows[i].querySelector(".fill");
+    f.style.width = Math.min(100, (v / LEVEL_MAX) * 100) + "%";
+    f.className = "fill" + (v >= 330 ? " clip" : v > S.cfg.thr ? " over" : "");
+    lvRows[i].querySelector(".val").textContent = v;
+  });
+}
+
+// ---------- test score and history ----------
+function drawExpected() {
+  document.querySelectorAll("#choices button").forEach((b) =>
+    b.setAttribute("aria-pressed", String((b.dataset.side || null) === S.expected)));
+}
+function drawScore() {
+  const t = $("score");
+  t.innerHTML = "";
+  let hits = 0, tries = 0;
+  for (const side of ["LEFT", "RIGHT", "CENTRE"]) {
+    const [h, n] = S.score[side] || [0, 0];
+    hits += h; tries += n;
+    if (side === "CENTRE" && n === 0) continue;
+    t.insertAdjacentHTML("beforeend",
+      `<tr><td>${SIDE_WORD[side]}</td><td>${h} of ${n}</td><td>${n ? Math.round((100 * h) / n) + "%" : ""}</td></tr>`);
+  }
+  t.insertAdjacentHTML("beforeend",
+    `<tr class="total"><td>All</td><td>${hits} of ${tries}</td><td>${tries ? Math.round((100 * hits) / tries) + "%" : ""}</td></tr>`);
+}
+function drawHistory() {
+  const box = $("hist");
+  if (!S.history.length) { box.innerHTML = '<p class="empty">No sounds yet.</p>'; return; }
+  const rows = S.history.slice(-30).reverse().map((e) => {
+    const pairs = e.pairs === 2 ? (e.agree ? "both agree" : '<span class="doubt">disagree</span>')
+      : `<span class="doubt">${e.pairs === 1 ? "one pair" : "none"}</span>`;
+    const test = e.hit === null || e.hit === undefined ? ""
+      : e.hit ? `expected ${SIDE_WORD[e.expected].toLowerCase()} ✓`
+      : `<span class="miss">expected ${SIDE_WORD[e.expected].toLowerCase()} ✗</span>`;
+    return `<tr><td>${e.n}</td><td class="when">${e.time || ""}</td><td class="side-${e.side}">${SIDE_WORD[e.side] || e.side}</td>` +
+      `<td class="num">${e.dt === null ? "–" : fmtUs(e.dt)}</td><td>${pairs}</td><td>${test}</td></tr>`;
+  }).join("");
+  box.innerHTML = `<table><tr><th>#</th><th class="when">Time</th><th>Side</th><th class="num">dt</th><th>Pairs</th><th>Test</th></tr>${rows}</table>`;
+}
+
+// ---------- serial log ----------
+function addRaw(line) {
+  if (line.startsWith("LVL ")) return;      // 10 per second; the meters show them
+  S.raw.push(line);
+  if (S.raw.length > 300) S.raw.shift();
+  const pre = $("raw");
+  const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 4;
+  pre.textContent = S.raw.join("\n");
+  if (atEnd) pre.scrollTop = pre.scrollHeight;
+}
+
+// ---------- messages from direction_ui.py ----------
+function applyCfg(cfg) {
+  if (!cfg || !Object.keys(cfg).length) return;
+  Object.assign(S.cfg, cfg);
+  drawScale(); drawThreshold();
+}
+function handle(msg) {
+  if (typeof msg.raw === "string") addRaw(msg.raw);
+  switch (msg.kind) {
+    case "snapshot":
+      S.link = msg.link; S.armed = msg.armed; S.expected = msg.expected;
+      S.score = msg.score; S.history = msg.history; S.raw = [];
+      applyCfg(msg.cfg);
+      msg.lines.forEach(addRaw);
+      if (msg.base) $("base").textContent = `Resting level per mic: ${msg.base.join(", ")} counts.`;
+      if (msg.log) showLog(msg.log);
+      if (S.history.length) showEvent(S.history[S.history.length - 1], false);
+      drawStatus(); drawExpected(); drawScore(); drawHistory();
+      break;
+    case "link":
+      S.link = msg;
+      if (msg.state !== "connected" && msg.state !== "demo") { S.armed = false; drawLevels([0, 0, 0, 0]); }
+      drawStatus();
+      break;
+    case "cfg": applyCfg(msg); break;
+    case "base": $("base").textContent = `Resting level per mic: ${msg.mics.join(", ")} counts.`; break;
+    case "armed": S.armed = true; S.holdUntil = 0; endFlood(); drawState(); break;
+    case "lvl": drawLevels(msg.mics); break;
+    case "evt":
+      S.armed = false;
+      S.holdUntil = Date.now() + S.cfg.hold_ms;
+      S.score = msg.score;
+      S.history.push(msg);
+      if (S.history.length > 40) S.history.shift();
+      showEvent(msg, !reduced);
+      drawState(); drawScore(); drawHistory();
+      break;
+    case "expected": S.expected = msg.expected; drawExpected(); break;
+    case "score":
+      S.score = msg.score;
+      if (msg.cleared) S.history = [];
+      drawScore(); drawHistory();
+      break;
+    case "log": showLog(msg.log); break;
+  }
+}
+
+function showLog(path) {
+  const parts = path.split(/[\\/]/);
+  $("logfile").textContent = `Events are saved to ${parts.slice(-2).join("/")}`;
+  $("logfile").title = path;
+}
+
+const post = (path, body) => fetch(path, { method: "POST", body: JSON.stringify(body || {}) });
+function setExpected(side) { post("/expect", { side: side || null }); }
+$("choices").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (b) setExpected(b.dataset.side);
+});
+$("reset").addEventListener("click", () => post("/reset"));
+document.addEventListener("keydown", (e) => {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const map = { ArrowLeft: "LEFT", ArrowRight: "RIGHT", ArrowDown: "CENTRE", Escape: "" };
+  if (e.key in map) { e.preventDefault(); setExpected(map[e.key]); }
+});
+
+drawScale(); drawThreshold(); drawMics(null); drawScore(); drawStatus();
+const es = new EventSource("/events");
+es.onmessage = (e) => handle(JSON.parse(e.data));
+es.onerror = () => { S.link = { state: "server" }; S.armed = false; drawStatus(); };
+</script>
+</body>
+</html>

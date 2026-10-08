@@ -21,27 +21,41 @@ behaviour, timing, memory), not just *what*. Prefer clear, commented code over c
 | MCU board | **UC3-A3 Xplained** (AT32UC3A3256, 32-bit AVR, up to 66 MHz, 64 KB CPU SRAM + 2×32 KB bus SRAM, Hi-Speed USB) |
 | Programming | USB **DFU bootloader** (no on-board debugger). No JTAG debugger yet. |
 | Microphones | 4 × **Adafruit MAX9814** electret mic amp with AGC (pins: GND, V+, Gain, Out, AR) |
-| Layout | 4 mics at the corners of a rectangle on a tray, roughly 35 × 45 cm (**exact capsule positions not yet measured**). Corners: mic 1 front-right, mic 2 front-left, mic 3 back-left, mic 4 back-right |
+| Layout | 4 mics at the corners of a rectangle on a tray, roughly 35 × 45 cm (**exact capsule positions not yet measured**). Corners (layout of 2026-10-08, seen from above, UP pointing away from you): AD1 up-left, AD2 up-right, AD3 down-left, AD4 down-right. Mic n = ADn |
 
 ### Wiring (per microphone)
 | MAX9814 pin | Connect to |
 |---|---|
 | V+ | 3.3 V on the Xplained (NOT 5 V — keeps output within ADC range) |
 | GND | GND (star ground from central breadboard) |
-| Out | One ADC input each: mic 1 → AD4, mics 2–4 → AD1–AD3 (see pin table below) |
+| Out | One ADC input each: mic n → ADn, AD1–AD4 (see pin table below) |
 | Gain | Unconnected for now = 60 dB. To V+ = 40 dB, to GND = 50 dB |
 | AR | Unconnected (attack/release ratio 1:4000, slowest release) |
 
 ### ADC pins (from the part header `uc3a3256.h`; AD0–AD3 use GPIO function 0, AD4–AD7 function 2)
-| Mic | ADC channel | MCU pin | Xplained header | Tray corner | Verified |
+| Mic | ADC channel | MCU pin | Xplained header | Corner (2026-10-08) | Verified |
 |---|---|---|---|---|---|
-| 1 | AD4 | PA20 (function 2) | J2 (pin not yet recorded) | front-right | tap test ✓ |
-| 2 | AD1 | PA22 | J2 pin 2 | front-left | tap test ✓ |
-| 3 | AD2 | PA23 | J2 pin 3 (presumed from pattern) | back-left | tap test ✓ |
-| 4 | AD3 | PA24 | J2 pin 4 (presumed from pattern) | back-right | tap test ✓ |
+| 1 | AD1 | PA22 | J2 pin 2 | up-left | layout from the team; tap test to confirm |
+| 2 | AD2 | PA23 | J2 pin 3 (presumed from pattern) | up-right | as above |
+| 3 | AD3 | PA24 | J2 pin 4 (presumed from pattern) | down-left | as above |
+| 4 | AD4 | PA20 (function 2) | J2 (pin not yet recorded) | down-right | as above |
 
-Front/back was set by the team (mics 1–2 face forward). Left/right was inferred from the
-clap test (2026-10-01): claps from the right reach mics 1 and 4 first, from the left 2 and 3.
+Layout of 2026-10-08 (from the team), square seen from above:
+
+```
+              UP
+      AD1 ────────── AD2
+  LEFT │              │ RIGHT
+      AD3 ────────── AD4
+             DOWN
+```
+UP side = AD1 (left) + AD2 (right), RIGHT side = AD2 + AD4, LEFT side = AD1 + AD3,
+DOWN side = AD3 (left) + AD4 (right). `apps/direction` uses this layout.
+
+Earlier layout (2026-10-01, clap test): mic 1 = AD4 front-right, mic 2 = AD1 front-left,
+mic 3 = AD2 back-left, mic 4 = AD3 back-right. `first_arrival` and `mic_test` still use
+that numbering (`mic_adc_channel = {4, 1, 2, 3}`), so their "mic n" no longer matches the
+corners above. `mic_test` also prints the ADC channel, so read its output by channel.
 
 Wiring is provisional; re-verify this table after the rewire.
 
@@ -97,7 +111,7 @@ flash from macOS.
   `project_9-avr32/apps/<name>/` (sources + `conf_*.h` + `asf.h`), each with a `gcc/`
   folder holding `Makefile` and `config.mk`. `config.mk` sets
   `PRJ_PATH = ../../../vendor/xdk-asf-3.52.0`, lists our own files as `../main.c`, and
-  adds `-I..` to `CPPFLAGS`.
+  adds `-I..` to `CPPFLAGS`. Host-side Python tools live in `project_9-avr32/host/`.
 - Build: `make -C apps/<name>/gcc` inside the container (ASF makefile system:
   `config.mk` + `make/Makefile.avr32.in`). Compiler flag `-mpart=uc3a3256`,
   `BOARD=UC3_A3_XPLAINED`.
@@ -141,6 +155,31 @@ USB. Wiring is provisional and will be redone.
       against back) also scored 17/20. The results match the team's front/back layout,
       which also shows the PDCA frame is aligned: a shifted frame would rotate the mic labels.
       Typical delays: across left↔right ≈ 0.8–1.0 ms, partner mic on the same side 0.06–0.4 ms.
+- [ ] **Left/right with UI (2026-10-08): `apps/direction` + `host/direction_ui.py`.**
+      Compiled with avr32-gcc 4.4.7 (no warnings), decision logic unit-tested on the PC,
+      UI tested against a fake serial port. The first build flashed and enumerated as
+      "Project_9 direction". Same day it was remapped to the new layout (mic n = ADn);
+      **the remapped build has not been run on the board yet.**
+      - Same sampling chain and threshold detector as `first_arrival`. The decision lives
+        in `side.c` (hardware-free; `test_side.c` runs it on the PC): up pair
+        dt = t(AD1) − t(AD2), down pair dt = t(AD3) − t(AD4), dt = their mean
+        (left minus right).
+        dt > +100 µs → RIGHT, < −100 µs → LEFT, otherwise CENTRE. `agree` = both pairs
+        point the same way. A mic later than 1700 µs after the first is an echo and is
+        dropped; with no complete pair the first mic's side is used.
+      - Hold-off is now a non-blocking state machine (ARMED → LISTENING 2 ms → HOLDOFF
+        1.5 s), so level lines keep coming while the AGC recovers.
+      - LEDs (LED n−1 = ADn): right = LED1+LED3, left = LED0+LED2, centre = all four.
+      - Serial protocol (documented at the top of `main.c`): `CFG`, `BASE`, `ARMED`,
+        `LVL` (peak |dev| per mic every 100 ms), `EVT n= side= dt= up= down= pairs=
+        agree= first= m1..m4=` (m n = ADn). Human-only lines start with `#`.
+      - Host UI: `python3 host/direction_ui.py` (Python 3.8+, pyserial optional) finds the
+        board, serves a page on http://127.0.0.1:8765 and opens the browser. Clap-test
+        scoring (arrow keys set the expected side) and a CSV per run in `host/logs/`.
+        `--demo` runs without a board.
+      - PC model with a guessed 35 cm left-right spacing gives ±990 µs at ±90°. On the
+        2026-10-01 wiring that matched the measured 0.8–1.0 ms left↔right; after the
+        rewire, measure which side of the square is which length.
 
 ### Findings to carry into the rewire
 - **AD0 / PA21 is noisy — avoid it.** It showed a steady p2p ≈ 360 with no sound and a
@@ -180,6 +219,8 @@ USB. Wiring is provisional and will be redone.
 - `mic_test` and `first_arrival` only print while a terminal holds DTR high
   (`screen /dev/cu.usbmodem*` does). `mic_test` toggles LED0 as a heartbeat; `first_arrival`
   lights LED n−1 for the first mic n of the last event.
+- Only one program can hold the serial port. Quit `screen` before starting
+  `host/direction_ui.py`, and stop the UI (Ctrl-C) before using `screen`.
 - `first_arrival`: don't call ASF `adc_configure()`. It ORs SHTIM=15 and STARTUP=31 into
   `ADC.mr`, which is far too slow for 4 × 48 kHz.
 - PDCA alignment: read `ADC.lcdr` once before `pdca_enable()`. A stale "data ready" makes
@@ -198,8 +239,10 @@ USB. Wiring is provisional and will be redone.
    `first_arrival` (48 MHz, 48 kHz per mic). 96 kHz still open if needed.
 6. ~~Timer-triggered 4-channel ADC sequence + PDCA~~ — done in `first_arrival` as an
    endless ring buffer (PDCA reload interrupt), not ping-pong buffers.
-6b. `first_arrival`: fill `mic_corner[]`, print FORWARD/RIGHT/BACK/LEFT using the
-   two-earliest-mics rule, longer hold-off (~2 s) for AGC recovery.
+6b. ~~`first_arrival`: fill `mic_corner[]`, print FORWARD/RIGHT/BACK/LEFT, longer
+   hold-off~~ — superseded by `apps/direction` (left/right, 1.5 s hold-off). Next:
+   flash it, run a clap test from the UI (10 left, 10 right, a few centre) and record
+   the score here.
 7. Burst capture on trigger (e.g. clap above threshold) → dump raw samples over USB;
    host saves to `.npy`/CSV.
 8. Measure and store ADC inter-channel skew; apply correction. Note the ADC converts
@@ -207,7 +250,9 @@ USB. Wiring is provisional and will be redone.
 9. TDoA estimation on the PC first (cross-correlation / GCC-PHAT with sub-sample
    interpolation), validate against oscilloscope measurements, then port to the MCU
    (UC3 DSP library has fixed-point FFT).
-10. Direction estimate from pairwise delays + measured mic geometry; simple UI.
+10. Direction estimate from pairwise delays + measured mic geometry. UI started in
+   `host/direction_ui.py`: its dt meter becomes an angle once the spacing is measured,
+   angle = asin(343 m/s · dt / left-right spacing).
 
 ## Conventions
 - C (gnu99) for firmware, Python 3 for host tools.

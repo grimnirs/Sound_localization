@@ -8,3 +8,6 @@ vendor/*
 *.map
 *.lss
 *.sym
+# direction_ui.py writes one CSV per run here
+host/logs/
+__pycache__/

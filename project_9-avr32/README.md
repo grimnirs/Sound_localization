@@ -44,3 +44,14 @@ If those lines are missing, add them. Without them the program flashes but never
 
 USB passthrough into Docker on macOS is unreliable, which is why flashing
 happens on the host. Both sides see the same files, so no copying is needed.
+
+## Direction UI (apps/direction)
+
+1. Build `apps/direction` in the container: `make -C apps/direction/gcc`.
+2. Flash it from macOS: `./scripts/flash.sh apps/direction/gcc/direction.hex`.
+3. In a macOS Terminal (not the container, and with `screen` closed):
+   `python3 host/direction_ui.py`. It finds the board and opens the page in your browser.
+   Try it without the board first with `python3 host/direction_ui.py --demo`.
+
+Optional: `pip3 install pyserial` (the script falls back to the built-in POSIX serial
+reader without it). Each run's events are saved as CSV in `host/logs/`.
